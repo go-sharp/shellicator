@@ -125,7 +125,7 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 			return
 		}
 
-		fmt.Fprintln(w, "Successfully recevied oauth token, you may close this window.")
+		fmt.Fprintln(w, "Successfully received oauth token, you may close this window now.")
 		okCh <- rcode
 	})
 
@@ -168,5 +168,5 @@ func getListener(ports []int) (net.Listener, int, error) {
 		}
 	}
 
-	return nil, -1, fmt.Errorf("could not bind any of this local ports: %v", ports)
+	return nil, -1, fmt.Errorf("could not bind any of these local ports: %v", ports)
 }
