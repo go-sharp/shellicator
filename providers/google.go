@@ -2,7 +2,7 @@ package providers
 
 import "golang.org/x/oauth2"
 
-// NewGoogleProvider creates a new oauth2.Config for the google.
+// NewGoogleProvider creates a new oauth2.Config for the google oauth endpoint.
 func NewGoogleProvider(clientID, clientSecret string, scopes ...string) oauth2.Config {
 	if len(scopes) == 0 {
 		scopes = append(scopes, "openid")

@@ -50,6 +50,7 @@ type Authenticator struct {
 	timeout     time.Duration
 	store       Storager
 	providers   map[string]oauth2.Config
+	listener    net.Listener
 }
 
 // Authenticate opens a browser windows and calls the configured oauth provider.
@@ -93,6 +94,25 @@ func (a Authenticator) GetToken(key string) (*oauth2.Token, error) {
 func WithProvider(key string, cfg oauth2.Config) AuthOptions {
 	return func(a *Authenticator) {
 		a.providers[key] = cfg
+	}
+}
+
+// WithPorts configures the Authenticator to use the specified ports.
+// Default: 42000 - 42009
+func WithPorts(ports ...int) AuthOptions {
+	return func(a *Authenticator) {
+		if len(ports) > 0 {
+			a.ports = ports
+		}
+	}
+}
+
+// WithTimeout configures the timeout for the Authenticator.
+// If timeout reached the Authenticator closes the local server
+// and returns an error. Default: 5 minutes.
+func WithTimeout(d time.Duration) AuthOptions {
+	return func(a *Authenticator) {
+		a.timeout = d
 	}
 }
 
