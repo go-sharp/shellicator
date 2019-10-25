@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"strconv"
@@ -18,15 +19,17 @@ import (
 // Storager persists tokens for later use.
 type Storager interface {
 	RetrieveToken(key string) (*oauth2.Token, error)
-	StoreToken(key string, token *oauth2.Token)
+	StoreToken(key string, token *oauth2.Token) error
 }
 
 // NewAuthenticator returns a new Authenticator.
 func NewAuthenticator(opts ...AuthOptions) Authenticator {
+	t, _ := template.New("callback").Parse("Successfully received oauth token, you may close this window now.")
 	authenticator := Authenticator{
-		providers: make(map[string]oauth2.Config),
-		timeout:   time.Minute * 5,
-		ports:     []int{42000, 42001, 42002, 42003, 42004, 42005, 42006, 42007, 42008, 42009},
+		providers:  make(map[string]oauth2.Config),
+		timeout:    time.Minute * 5,
+		ports:      []int{42000, 42001, 42002, 42003, 42004, 42005, 42006, 42007, 42008, 42009},
+		cbTemplate: t,
 	}
 
 	for _, fn := range opts {
@@ -35,6 +38,10 @@ func NewAuthenticator(opts ...AuthOptions) Authenticator {
 
 	if authenticator.store == nil {
 		authenticator.store = &MemoryStorage{}
+	}
+
+	if authenticator.printer == nil {
+		authenticator.printer = defaultPrinter(authenticator.openBrowser)
 	}
 
 	return authenticator
@@ -51,13 +58,15 @@ type Authenticator struct {
 	store       Storager
 	providers   map[string]oauth2.Config
 	listener    net.Listener
+	printer     func(string)
+	cbTemplate  *template.Template
 }
 
 // Authenticate opens a browser windows and calls the configured oauth provider.
 func (a Authenticator) Authenticate(key string) error {
 	prov, ok := a.providers[key]
 	if !ok {
-		return fmt.Errorf("Authenticator: no provider with the given key %v found", key)
+		return sherr{Err: ErrProviderNotFound, message: fmt.Sprintf("Authenticator: no provider with the given key %v found", key)}
 	}
 
 	ln, port, err := getListener(a.ports)
@@ -75,8 +84,20 @@ func (a Authenticator) Authenticate(key string) error {
 		return err
 	}
 
-	a.store.StoreToken(key, token)
-	return nil
+	return a.store.StoreToken(key, token)
+}
+
+// NewClient returns a new http client with a stored oauth token.
+// If no valid token was found, an ErrTokenNotFound error is returned.
+func (a Authenticator) NewClient(ctx context.Context, key string) (*http.Client, error) {
+	if p, ok := a.providers[key]; ok {
+		t, err := a.GetToken(key)
+		if err != nil {
+			return nil, err
+		}
+		return p.Client(ctx, t), nil
+	}
+	return nil, sherr{Err: ErrProviderNotFound, message: fmt.Sprintf("Authenticator no provider with the given key %v found", key)}
 }
 
 // GetToken gets a stored oauth token.
@@ -116,6 +137,48 @@ func WithTimeout(d time.Duration) AuthOptions {
 	}
 }
 
+// WithUseOpenBrowserFeature configures if a browser should automatically openend
+// and navigate to the oauth AuthCodeURL. Default: false.
+func WithUseOpenBrowserFeature(openBrowser bool) AuthOptions {
+	return func(a *Authenticator) {
+		a.openBrowser = openBrowser
+	}
+}
+
+// WithUsePrinter configures to use the supplied function to print out the oauth AuthCodeURL.
+// The function receives the AuthCodeURL of the chosen oauth provider.
+func WithUsePrinter(printer func(url string)) AuthOptions {
+	return func(a *Authenticator) {
+		if printer == nil {
+			panic("shellicator: WithUsePrinter expects a function not nil")
+		}
+		a.printer = printer
+	}
+}
+
+// WithCallbackTemplate configures the authenticator to use the specified html
+// for the callback page
+func WithCallbackTemplate(html string) AuthOptions {
+	return func(a *Authenticator) {
+		t, err := template.New("callback").Parse(html)
+		if err != nil {
+			panic("shellicator: WithCallbackTemplate received an invalid template: " + err.Error())
+		}
+		a.cbTemplate = t
+	}
+}
+
+// WithStore configures the authenticator to use the provided storager
+// to save and restore tokens.
+func WithStore(store Storager) AuthOptions {
+	return func(a *Authenticator) {
+		if store == nil {
+			panic("shellicator: WithStore expects a not nil Storager")
+		}
+		a.store = store
+	}
+}
+
 func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener, cfg oauth2.Config) (*oauth2.Token, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -128,7 +191,6 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 	errCh := make(chan error)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Implement token response handler
 		rstate := r.URL.Query().Get("state")
 		rcode := r.URL.Query().Get("code")
 		if rstate == "" || rcode == "" {
@@ -145,7 +207,7 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 			return
 		}
 
-		fmt.Fprintln(w, "Successfully received oauth token, you may close this window now.")
+		a.cbTemplate.Execute(w, nil)
 		okCh <- rcode
 	})
 
@@ -160,7 +222,10 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 	// Open browser and print Auth URL
 	// TODO: Implement PKCE
 	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	fmt.Println(url)
+	a.printer(url)
+	if a.openBrowser {
+		openURL(url)
+	}
 
 	var code string
 	select {
@@ -189,4 +254,15 @@ func getListener(ports []int) (net.Listener, int, error) {
 	}
 
 	return nil, -1, fmt.Errorf("could not bind any of these local ports: %v", ports)
+}
+
+func defaultPrinter(openBrowser bool) func(string) {
+	if openBrowser {
+		return func(url string) {
+			fmt.Printf("If your browser doesn't open automatically, navigate to the following url and authenticate yourself:\n%v\n", url)
+		}
+	}
+	return func(url string) {
+		fmt.Printf("Open your browser and navigate to the following url to authenticate yourself:\n%v\n", url)
+	}
 }
