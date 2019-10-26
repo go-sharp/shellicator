@@ -36,6 +36,10 @@ func NewAuthenticator(opts ...AuthOptions) Authenticator {
 		fn(&authenticator)
 	}
 
+	if len(authenticator.providers) == 0 {
+		panic("shellicator: NewAuthenticator needs at least one provider option")
+	}
+
 	if authenticator.store == nil {
 		authenticator.store = &MemoryStorage{}
 	}
@@ -62,7 +66,8 @@ type Authenticator struct {
 	cbTemplate  *template.Template
 }
 
-// Authenticate opens a browser windows and calls the configured oauth provider.
+// Authenticate opens a browser windows and navigates to the configured oauth provider (if configured).
+// Otherwise it prints only the URL to the oauth provider.
 func (a Authenticator) Authenticate(key string) error {
 	prov, ok := a.providers[key]
 	if !ok {
@@ -157,7 +162,7 @@ func WithUsePrinter(printer func(url string)) AuthOptions {
 }
 
 // WithCallbackTemplate configures the authenticator to use the specified html
-// for the callback page
+// for the callback page.
 func WithCallbackTemplate(html string) AuthOptions {
 	return func(a *Authenticator) {
 		t, err := template.New("callback").Parse(html)
