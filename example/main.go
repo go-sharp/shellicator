@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/go-sharp/shellicator"
+	serr "github.com/go-sharp/shellicator/errors"
 	"github.com/go-sharp/shellicator/providers"
 )
 
@@ -40,7 +41,7 @@ func main() {
 	// was found, method retunrs an ErrTokenNotFound error.
 	client, err := auth.NewClient(context.Background(), "google")
 	if err != nil {
-		if !errors.Is(err, shellicator.ErrTokenNotFound) {
+		if !errors.Is(err, serr.ErrTokenNotFound) {
 			log.Fatal(err)
 		}
 
