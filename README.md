@@ -6,6 +6,10 @@ This library opens a local http server to receive a callback from an oauth2 prov
 
 For a working example: [Example](./example/main.go)
 
+## Releases
+Release 1.0.0
+- Initial release 
+
 ## Minimal Example
 
 Usage:
