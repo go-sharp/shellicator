@@ -1,4 +1,4 @@
-package shellicator
+package errors
 
 import "fmt"
 
@@ -20,6 +20,21 @@ func (e Err) Error() string {
 	default:
 		return "shellicator: generic error occured"
 	}
+}
+
+// WithMessage returns an error with the specified message.
+func (e Err) WithMessage(msg string) error {
+	return &sherr{Err: e, message: msg}
+}
+
+// WithWrappedError wraps an existing error an returns a new error.
+func (e Err) WithWrappedError(err error) error {
+	return &sherr{Err: e, wrappedErr: err}
+}
+
+// WithMessageAndError wraps an existing error and adds a message.
+func (e Err) WithMessageAndError(msg string, err error) error {
+	return &sherr{Err: e, wrappedErr: err, message: msg}
 }
 
 const (

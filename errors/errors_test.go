@@ -1,4 +1,4 @@
-package shellicator
+package errors
 
 import (
 	"errors"

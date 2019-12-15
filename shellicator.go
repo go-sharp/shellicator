@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	serr "github.com/go-sharp/shellicator/errors"
+
 	"golang.org/x/oauth2"
 )
 
@@ -71,7 +73,7 @@ type Authenticator struct {
 func (a Authenticator) Authenticate(key string) error {
 	prov, ok := a.providers[key]
 	if !ok {
-		return sherr{Err: ErrProviderNotFound, message: fmt.Sprintf("Authenticator: no provider with the given key %v found", key)}
+		return serr.ErrProviderNotFound.WithMessage(fmt.Sprintf("Authenticator: no provider with the given key %v found", key))
 	}
 
 	ln, port, err := getListener(a.ports)
@@ -102,7 +104,7 @@ func (a Authenticator) NewClient(ctx context.Context, key string) (*http.Client,
 		}
 		return p.Client(ctx, t), nil
 	}
-	return nil, sherr{Err: ErrProviderNotFound, message: fmt.Sprintf("Authenticator no provider with the given key %v found", key)}
+	return nil, serr.ErrProviderNotFound.WithMessage(fmt.Sprintf("Authenticator: no provider with the given key %v found", key))
 }
 
 // GetToken gets a stored oauth token.
