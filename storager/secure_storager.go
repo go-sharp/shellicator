@@ -5,6 +5,7 @@ package storager
 import (
 	"encoding/base64"
 	"encoding/json"
+	"time"
 
 	"github.com/go-sharp/shellicator/errors"
 	"github.com/zalando/go-keyring"
@@ -39,6 +40,10 @@ func (s SecureStore) RetrieveToken(key string) (*oauth2.Token, error) {
 	var token oauth2.Token
 	if err := json.Unmarshal(data, &token); err != nil {
 		return nil, errors.ErrGeneric.WithWrappedError(err)
+	}
+
+	if token.RefreshToken == "" && !token.Expiry.After(time.Now()) {
+		return nil, errors.ErrTokenNotFound.WithMessage("SecureStorager: no vaild token and no refresh token found")
 	}
 	return &token, nil
 }
