@@ -18,6 +18,16 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// GrantType defines all supported oauth flows.
+type GrantType int
+
+const (
+	// AuthorizationGrantType is the authorization grant flow as in oauth2 specified.
+	AuthorizationGrantType GrantType = iota
+	// DeviceGrantType is the device grant flow as in oauth2 specified.
+	DeviceGrantType
+)
+
 // Storager persists tokens for later use.
 type Storager interface {
 	RetrieveToken(key string) (*oauth2.Token, error)
