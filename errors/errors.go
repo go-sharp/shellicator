@@ -17,6 +17,12 @@ func (e Err) Error() string {
 	switch e {
 	case ErrTokenNotFound:
 		return "shellicator: token not found"
+	case ErrProviderNotFound:
+		return "shellicator: no provider found"
+	case ErrProviderCfgInvalid:
+		return "shellicator: invalid provider configuration"
+	case ErrTimeout:
+		return "shellicator: timeout while waiting for an answer"
 	default:
 		return "shellicator: generic error occured"
 	}
@@ -41,10 +47,14 @@ const (
 	_ Err = iota
 	// ErrGeneric Generic error occured.
 	ErrGeneric
-	// ErrTokenNotFound A token was not found.
+	// ErrTokenNotFound a token was not found.
 	ErrTokenNotFound
-	// ErrProviderNotFound No valid oauth provider found
+	// ErrProviderNotFound no oauth provider found.
 	ErrProviderNotFound
+	// ErrProviderCfgInvalid provider configuration is invalid.
+	ErrProviderCfgInvalid
+	// ErrTimeout timeout occured while waiting for an answer.
+	ErrTimeout
 )
 
 type sherr struct {

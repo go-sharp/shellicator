@@ -1,3 +1,7 @@
+// Package shellicator is a simple library to get oauth2 tokens for shell commands.
+//
+// This library opens a local http server to receive a callback from an oauth2 provider and stores the received token locally.
+// It prints out the URL of the provider and if configured, opens a browser pointing to the oauth2 authcode URL.
 package shellicator
 
 import (
@@ -5,12 +9,16 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	serr "github.com/go-sharp/shellicator/errors"
@@ -18,17 +26,39 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// Provider is an interface that holds the configuration for the shellicator.
+type Provider interface {
+	OAuth2Config() oauth2.Config
+	DeviceAuthURL() string
+}
+
 // Storager persists tokens for later use.
 type Storager interface {
 	RetrieveToken(key string) (*oauth2.Token, error)
 	StoreToken(key string, token *oauth2.Token) error
 }
 
+// PrinterCtx passed to the printer function.
+type PrinterCtx struct {
+	URL      string
+	UserCode string
+}
+
+// VerificationURL returns the verification url and can be used to generate a QR code.
+func (p PrinterCtx) VerificationURL() string {
+	return fmt.Sprintf("%v?user_code=%v", p.URL, p.UserCode)
+}
+
+// IsDeviceGrant returns true if device grant flow is used
+func (p PrinterCtx) IsDeviceGrant() bool {
+	return p.UserCode != ""
+}
+
 // NewAuthenticator returns a new Authenticator.
 func NewAuthenticator(opts ...AuthOptions) Authenticator {
 	t, _ := template.New("callback").Parse("Successfully received oauth token, you may close this window now.")
 	authenticator := Authenticator{
-		providers:  make(map[string]oauth2.Config),
+		providers:  make(map[string]provConfig),
 		timeout:    time.Minute * 5,
 		ports:      []int{42000, 42001, 42002, 42003, 42004, 42005, 42006, 42007, 42008, 42009},
 		cbTemplate: t,
@@ -62,9 +92,9 @@ type Authenticator struct {
 	ports       []int
 	timeout     time.Duration
 	store       Storager
-	providers   map[string]oauth2.Config
+	providers   map[string]provConfig
 	listener    net.Listener
-	printer     func(string)
+	printer     func(PrinterCtx)
 	cbTemplate  *template.Template
 }
 
@@ -76,17 +106,22 @@ func (a Authenticator) Authenticate(key string) error {
 		return serr.ErrProviderNotFound.WithMessage(fmt.Sprintf("Authenticator: no provider with the given key %v found", key))
 	}
 
-	ln, port, err := getListener(a.ports)
-	if err != nil {
-		return err
+	// Check requirments for all grant types
+	cfg := prov.provider.OAuth2Config()
+	if cfg.ClientID == "" || cfg.Endpoint.TokenURL == "" {
+		return serr.ErrProviderCfgInvalid.WithMessage(
+			fmt.Sprintf("Authenticator: invalid provider configuration for key %v, missing ClientID or TokenURL", key))
 	}
 
-	prov.RedirectURL = fmt.Sprintf("http://localhost:%v/callback", port)
+	var token *oauth2.Token
+	var err error
 
-	ctx, cancel := context.WithTimeout(context.Background(), a.timeout)
-	defer cancel()
+	if prov.useDeviceGrant {
+		token, err = a.handleDeviceGrantFlow(key, prov.provider)
+	} else {
+		token, err = a.handleAuthFlow(key, cfg)
+	}
 
-	token, err := a.handleTokenExchange(ctx, ln, prov)
 	if err != nil {
 		return err
 	}
@@ -102,7 +137,9 @@ func (a Authenticator) NewClient(ctx context.Context, key string) (*http.Client,
 		if err != nil {
 			return nil, err
 		}
-		return p.Client(ctx, t), nil
+
+		c := p.provider.OAuth2Config()
+		return c.Client(ctx, t), nil
 	}
 	return nil, serr.ErrProviderNotFound.WithMessage(fmt.Sprintf("Authenticator: no provider with the given key %v found", key))
 }
@@ -119,8 +156,22 @@ func (a Authenticator) GetToken(key string) (*oauth2.Token, error) {
 
 // WithProvider configures an oauth provider with the specified key.
 // RedirectURI will be overwritten and must not be set.
-func WithProvider(key string, cfg oauth2.Config) AuthOptions {
+func WithProvider(key string, prov Provider) AuthOptions {
 	return func(a *Authenticator) {
+		if prov == nil {
+			panic("Authenticator: provider must not be nil")
+		}
+		cfg := a.providers[key]
+		cfg.provider = prov
+		a.providers[key] = cfg
+	}
+}
+
+// WithUseDeviceGrant configures the authenticator to use the device grant flow.
+func WithUseDeviceGrant(key string, useDeviceGrant bool) AuthOptions {
+	return func(a *Authenticator) {
+		cfg := a.providers[key]
+		cfg.useDeviceGrant = useDeviceGrant
 		a.providers[key] = cfg
 	}
 }
@@ -154,7 +205,7 @@ func WithUseOpenBrowserFeature(openBrowser bool) AuthOptions {
 
 // WithUsePrinter configures to use the supplied function to print out the oauth AuthCodeURL.
 // The function receives the AuthCodeURL of the chosen oauth provider.
-func WithUsePrinter(printer func(url string)) AuthOptions {
+func WithUsePrinter(printer func(ctx PrinterCtx)) AuthOptions {
 	return func(a *Authenticator) {
 		if printer == nil {
 			panic("shellicator: WithUsePrinter expects a function not nil")
@@ -184,6 +235,126 @@ func WithStore(store Storager) AuthOptions {
 		}
 		a.store = store
 	}
+}
+
+func (a Authenticator) handleDeviceGrantFlow(key string, prov Provider) (*oauth2.Token, error) {
+	if prov.DeviceAuthURL() == "" {
+		return nil, serr.ErrProviderCfgInvalid.WithMessage(
+			fmt.Sprintf("Authenticator: invalid provider configuration for key %v, missing device auth url", key))
+	}
+
+	resp, err := http.PostForm(prov.DeviceAuthURL(), url.Values{
+		"client_id": {prov.OAuth2Config().ClientID},
+		"scope":     {strings.Join(prov.OAuth2Config().Scopes, " ")},
+	})
+
+	if err != nil {
+		return nil, serr.ErrGeneric.WithMessageAndError("Authenticator: failed to get device code", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fmt.Println(prov.OAuth2Config())
+		return nil, serr.ErrGeneric.WithMessage("Authenticator: failed to get device code: " + resp.Status)
+	}
+
+	var res deviceGrantResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, serr.ErrGeneric.WithMessageAndError("Authenticator: failed to decode answer", err)
+	}
+
+	a.printer(PrinterCtx{URL: res.VerificationURI, UserCode: res.UserCode})
+	return a.requestAccessToken(prov, res)
+}
+
+func (a Authenticator) requestAccessToken(prov Provider, res deviceGrantResponse) (*oauth2.Token, error) {
+	interval := res.getInterval()
+	timeout := time.Second * time.Duration(res.Expires)
+	if timeout > a.timeout {
+		timeout = a.timeout
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	for {
+		resp, err := http.PostForm(prov.OAuth2Config().Endpoint.TokenURL, url.Values{
+			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+			"device_code": {res.DeviceCode},
+			"client_id":   {prov.OAuth2Config().ClientID},
+		})
+
+		if err != nil {
+			// If the error is only temporary or timeout is reached,
+			// increase the wait interval.
+			if !(err.(*url.Error).Temporary() || err.(*url.Error).Timeout()) {
+				return nil, serr.ErrGeneric.WithWrappedError(err)
+			}
+			interval *= 2
+		} else {
+			data, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return nil, serr.ErrGeneric.WithWrappedError(err)
+			}
+
+			// If we get a 200 status code, decode token and return it
+			if resp.StatusCode == 200 {
+				var token tokenJSON
+				if err := json.Unmarshal(data, &token); err != nil {
+					return nil, serr.ErrGeneric.WithWrappedError(err)
+				}
+
+				return &oauth2.Token{
+					AccessToken:  token.AccessToken,
+					TokenType:    token.TokenType,
+					RefreshToken: token.RefreshToken,
+					Expiry:       token.expiry(),
+				}, nil
+			}
+
+			var errResp devAccessTokenErrResponse
+			if err := json.Unmarshal(data, &errResp); err != nil {
+				return nil, serr.ErrGeneric.WithWrappedError(err)
+			}
+
+			switch errResp.Error {
+			case devTokRespSlowDown:
+				interval += 5 * time.Second
+			case devTokRespAuthorizationPending:
+				// Do nothing and poll again
+			default:
+				return nil, serr.ErrGeneric.WithMessage(fmt.Sprintf("Authenticator: %v: %v ", errResp.Error, errResp.ErrorDescription))
+			}
+		}
+
+		// Wait for timeout or interval elapses
+		select {
+		case <-time.After(interval):
+			continue
+		case <-ctx.Done():
+			return nil, serr.ErrTimeout.WithMessage("Authenticator: timeout while waiting for oauth response")
+		}
+	}
+
+}
+
+func (a Authenticator) handleAuthFlow(key string, cfg oauth2.Config) (*oauth2.Token, error) {
+	if cfg.Endpoint.AuthURL == "" || cfg.Endpoint.TokenURL == "" {
+		return nil, serr.ErrProviderCfgInvalid.WithMessage(fmt.Sprintf("Authenticator: invalid provider configuration for key %v", key))
+	}
+
+	ln, port, err := getListener(a.ports)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg.RedirectURL = fmt.Sprintf("http://localhost:%v/callback", port)
+
+	ctx, cancel := context.WithTimeout(context.Background(), a.timeout)
+	defer cancel()
+
+	return a.handleTokenExchange(ctx, ln, cfg)
 }
 
 func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener, cfg oauth2.Config) (*oauth2.Token, error) {
@@ -229,7 +400,7 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 	// Open browser and print Auth URL
 	// TODO: Implement PKCE
 	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	a.printer(url)
+	a.printer(PrinterCtx{URL: url})
 	if a.openBrowser {
 		openURL(url)
 	}
@@ -241,7 +412,7 @@ func (a Authenticator) handleTokenExchange(ctx context.Context, ln net.Listener,
 	case err := <-errCh:
 		return nil, err
 	case <-ctx.Done():
-		return nil, errors.New("Authenticator: timeout while waiting for oauth response")
+		return nil, serr.ErrTimeout.WithMessage("Authenticator: timeout while waiting for oauth response")
 	}
 
 	t, err := cfg.Exchange(ctx, code, oauth2.AccessTypeOffline)
@@ -263,13 +434,18 @@ func getListener(ports []int) (net.Listener, int, error) {
 	return nil, -1, fmt.Errorf("could not bind any of these local ports: %v", ports)
 }
 
-func defaultPrinter(openBrowser bool) func(string) {
-	if openBrowser {
-		return func(url string) {
-			fmt.Printf("If your browser doesn't open automatically, navigate to the following url and authenticate yourself:\n%v\n", url)
+func defaultPrinter(openBrowser bool) func(PrinterCtx) {
+	return func(ctx PrinterCtx) {
+		if ctx.IsDeviceGrant() {
+			fmt.Printf("Open your browser and navigate to the following url: '%v'\nEnter this code: '%v'\n", ctx.URL, ctx.UserCode)
+			return
 		}
-	}
-	return func(url string) {
-		fmt.Printf("Open your browser and navigate to the following url to authenticate yourself:\n%v\n", url)
+
+		if openBrowser {
+			fmt.Printf("If your browser doesn't open automatically, navigate to the following url and authenticate yourself:\n%v\n", ctx.URL)
+			return
+		}
+
+		fmt.Printf("Open your browser and navigate to the following url to authenticate yourself:\n%v\n", ctx.URL)
 	}
 }
