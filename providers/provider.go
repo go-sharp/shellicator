@@ -7,6 +7,10 @@ import (
 	"net/http"
 )
 
+// NewProvider creates a new ProviderInfo according the well-known openid configuration
+// provided by the specified discovery endpoint.
+//
+// If device grant is used, client secret can be an empty string.
 func NewProvider(clientID, clientSecret, oidcDiscoverURL string, scopes ...string) *ProviderInfo {
 	if len(scopes) == 0 {
 		scopes = append(scopes, "openid")

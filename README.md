@@ -8,7 +8,10 @@ For a working example: [Example](./example/main.go)
 
 ## Releases
 Release 1.0.0
-- Initial release 
+- Initial release
+
+Release 2.0.0
+- Device Grant Flow added 
 
 ## Minimal Example
 
