@@ -3,8 +3,11 @@ module github.com/go-sharp/shellicator
 go 1.13
 
 require (
-	github.com/pkg/browser v0.0.0-20180916011732-0a3d74bf9ce4
-	golang.org/x/oauth2 v0.0.0-20191202225959-858c2ad4c8b6
+	cloud.google.com/go v0.34.0 // indirect
+	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
+	golang.org/x/net v0.7.0 // indirect
+	golang.org/x/oauth2 v0.5.0
+	google.golang.org/protobuf v1.28.1 // indirect
 )
 
 replace (
